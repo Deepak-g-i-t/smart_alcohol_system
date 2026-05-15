@@ -1,11 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const { login, register } = require('../controllers/authController');
+const rateLimit = require('express-rate-limit');
+const { login, register, sendOtp, verifyOtp } = require('../controllers/authController');
+const { validateLogin, validateRegister, validateOtp } = require('../middleware/validateInput');
 
-router.post('/login', login);
-router.post('/register', register);
+// Strict rate limiter for OTP endpoints
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 3,
+  message: { error: 'Too many OTP requests from this IP, please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
-// OTP Verification would go here as an extension
-// router.post('/verify-otp', verifyOtp);
+router.post('/login', validateLogin, login);
+router.post('/register', validateRegister, register);
+router.post('/send-otp', otpLimiter, sendOtp);
+router.post('/verify-otp', otpLimiter, validateOtp, verifyOtp);
 
 module.exports = router;
