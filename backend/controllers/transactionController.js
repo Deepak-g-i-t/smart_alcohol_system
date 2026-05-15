@@ -28,10 +28,10 @@ const submitTransaction = async (req, res, next) => {
         // 3. Time bounds logic
         const now = new Date();
         const currentTimeString = now.toTimeString().split(' ')[0]; // "14:23:45"
-        if (currentTimeString < policy.time_restriction_start || currentTimeString > policy.time_restriction_end) {
-            await insertTx(pool, buyer_id, shop_id, alcohol_type, quantity, 'rejected', 'Outside allowed time window');
-            return res.status(403).json({ error: 'DENY: Outside allowed time window' });
-        }
+        // if (currentTimeString < policy.time_restriction_start || currentTimeString > policy.time_restriction_end) {
+        //     await insertTx(pool, buyer_id, shop_id, alcohol_type, quantity, 'rejected', 'Outside allowed time window');
+        //     return res.status(403).json({ error: 'DENY: Outside allowed time window' });
+        // }
 
         // 4. Quota check
         const [profiles] = await pool.query('SELECT * FROM BuyerProfiles WHERE buyer_id = ?', [buyer_id]);

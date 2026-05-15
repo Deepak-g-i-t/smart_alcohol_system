@@ -1,0 +1,46 @@
+```
+└── 📁smart_alcohol_system
+    └── 📁backend
+        └── 📁config
+            ├── mongo.js
+            ├── mysql.js
+        └── 📁controllers
+            ├── analyticsController.js
+            ├── authController.js
+            ├── policyController.js
+            ├── transactionController.js
+        └── 📁middleware
+            ├── authMiddleware.js
+        └── 📁models
+            ├── AuditLog.js
+        └── 📁routes
+            ├── analytics.js
+            ├── auth.js
+            ├── policies.js
+            ├── transactions.js
+        ├── .env.example
+        ├── Dockerfile
+        ├── package.json
+        ├── server.js
+    └── 📁frontend
+        └── 📁src
+            └── 📁components
+                ├── AuthorityDashboard.jsx
+                ├── BuyerDashboard.jsx
+                ├── Dashboard.jsx
+                ├── Login.jsx
+                ├── ShopDashboard.jsx
+            ├── App.jsx
+            ├── index.css
+            ├── main.jsx
+        ├── .env.example
+        ├── index.html
+        ├── package-lock.json
+        ├── package.json
+        ├── postcss.config.js
+        ├── tailwind.config.js
+        ├── vite.config.js
+    ├── docker-compose.yml
+    ├── README.md
+    └── schema.sql
+```
