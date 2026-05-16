@@ -198,6 +198,14 @@ const submitTransaction = async (req, res, next) => {
     await logEvent('transaction_approved', shop_id, req.user.role,
       { buyer_id, transaction_id: txId, quantity, alcohol_type }, req.ip);
 
+    // Task 6 — real-time broadcast to authority dashboard
+    try {
+      req.app.get('io')?.to('role:authority').emit('transaction', {
+        id: txId, buyer_id, shop_id, alcohol_type, quantity,
+        status: 'approved', timestamp: new Date(),
+      });
+    } catch (_) { /* socket emit is non-fatal */ }
+
     return res.json({
       message: 'Transaction Approved',
       transaction_id: txId,

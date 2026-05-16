@@ -51,10 +51,25 @@ const logEvent = async (type, userId, role, details, ip) => {
 
 const register = async (req, res, next) => {
   try {
-    const { name, role, email, password, shop_location } = req.body;
+    const {
+      name, role, email, password,
+      phone, address, district, age,
+      // Shop fields
+      shop_name, license_number,
+      // Authority fields
+      dept, authority_code, designation,
+      // Legacy
+      shop_location,
+    } = req.body;
 
     if (!name || !role || !email || !password) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ error: 'name, role, email and password are required' });
+    }
+    if (!['authority', 'shop', 'buyer'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+    if (role === 'buyer' && age && parseInt(age) < 21) {
+      return res.status(400).json({ error: 'Buyer must be at least 21 years old' });
     }
 
     const pool = getPool();
@@ -64,23 +79,77 @@ const register = async (req, res, next) => {
     }
 
     const hash = await bcrypt.hash(password, 12);
+
+    // Insert user with all new columns
     const [result] = await pool.query(
-      'INSERT INTO Users (name, role, email, password_hash, shop_location) VALUES (?, ?, ?, ?, ?)',
-      [name, role, hash, email, shop_location || null]
+      `INSERT INTO Users
+         (name, role, email, password_hash, shop_location, phone, address, district, age, dept, authority_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name.trim(), role, email.trim().toLowerCase(), hash,
+        shop_location || district || null,
+        phone || null,
+        address || null,
+        district || null,
+        age ? parseInt(age) : null,
+        dept || null,
+        authority_code || null,
+      ]
     );
 
+    const userId = result.insertId;
+
+    // Role-specific follow-up inserts
     if (role === 'buyer') {
+      // Seed limits from active policy
+      let dailyLimit = 2, weeklyLimit = 10, monthlyLimit = 30;
+      try {
+        const [policies] = await pool.query('SELECT * FROM Policies ORDER BY id ASC LIMIT 1');
+        if (policies.length > 0) {
+          dailyLimit   = policies[0].daily_limit   || dailyLimit;
+          weeklyLimit  = policies[0].weekly_limit  || weeklyLimit;
+          monthlyLimit = policies[0].monthly_limit || monthlyLimit;
+        }
+      } catch (_) { /* use defaults if Policies table not ready */ }
+
       await pool.query(
         `INSERT INTO BuyerProfiles
            (buyer_id, daily_limit, weekly_limit, monthly_limit,
             daily_remaining, weekly_remaining, monthly_remaining)
-         VALUES (?, 2, 10, 30, 2, 10, 30)`,
-        [result.insertId]
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [userId, dailyLimit, weeklyLimit, monthlyLimit, dailyLimit, weeklyLimit, monthlyLimit]
       );
     }
 
-    await logEvent('user_registered', result.insertId, role, { email }, req.ip);
-    res.status(201).json({ message: 'User registered successfully', userId: result.insertId });
+    if (role === 'shop') {
+      try {
+        await pool.query(
+          `INSERT INTO Shops (user_id, shop_name, license_number, address, district, phone, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+          [
+            userId,
+            shop_name || name,
+            license_number || `LIC-${userId}`,
+            address || null,
+            district || null,
+            phone || null,
+          ]
+        );
+      } catch (e) {
+        logger.warn('Shops table insert failed (may not exist yet)', { message: e.message });
+      }
+    }
+
+    await logEvent('user_registered', userId, role, { email, name }, req.ip);
+
+    // Auto-login: return JWT immediately after registration
+    const token = jwt.sign(
+      { id: userId, role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.status(201).json({ token, role, name, id: userId, message: 'Account created successfully' });
   } catch (err) {
     next(err);
   }

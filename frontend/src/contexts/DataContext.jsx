@@ -1,361 +1,376 @@
-// Data Context - centralized data management using Firestore or Demo data
-import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+/**
+ * DataContext — real API calls via service layer (no Firebase / no demoData).
+ *
+ * Exported interface is identical to the old Firebase version so all
+ * consuming components continue to work without changes.
+ */
 import {
-  collection, doc, getDocs, getDoc, setDoc, updateDoc, addDoc,
-  query, where, orderBy, limit, onSnapshot, serverTimestamp,
-} from 'firebase/firestore';
-import { db, IS_DEMO_MODE } from '../firebase/config';
+  createContext, useContext, useState, useEffect,
+  useCallback, useMemo,
+} from 'react';
 import { useAuth } from './AuthContext';
-import { encrypt, decrypt } from '../utils/encryption';
-import {
-  DEMO_TRANSACTIONS, DEMO_BUYER_PROFILES, DEMO_POLICIES,
-  DEMO_AUDIT_LOGS, DEMO_ANALYTICS, DEMO_USERS,
-} from '../data/demoData';
+import * as txService   from '../api/transactionService';
+import * as policyService from '../api/policyService';
+import * as analyticsService from '../api/analyticsService';
+import * as buyerService from '../api/buyerService';
+import { getAuditLogs } from '../api/reportService';
 
 const DataContext = createContext(null);
 
 export function useData() {
-  const context = useContext(DataContext);
-  if (!context) throw new Error('useData must be used within DataProvider');
-  return context;
+  const ctx = useContext(DataContext);
+  if (!ctx) throw new Error('useData must be used within DataProvider');
+  return ctx;
 }
+
+/* ─── Analytics builder (pure computation, no imports needed) ─ */
+
+const buildAnalyticsFromTxns = (transactions) => {
+  const approved = transactions.filter((t) => t.status === 'approved');
+  const rejected = transactions.filter((t) => t.status === 'rejected');
+
+  // Daily trend — last 30 days
+  const trendMap = {};
+  transactions.forEach((t) => {
+    const d = new Date(t.timestamp).toISOString().split('T')[0];
+    if (!trendMap[d]) trendMap[d] = { date: d, approved: 0, rejected: 0 };
+    trendMap[d][t.status] += 1;
+  });
+  const dailyTrend = Object.values(trendMap)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-30);
+
+  // Alcohol distribution
+  const typeMap = {};
+  transactions.forEach((t) => {
+    typeMap[t.alcohol_type || t.alcoholType] =
+      (typeMap[t.alcohol_type || t.alcoholType] || 0) + 1;
+  });
+  const alcoholDistribution = Object.entries(typeMap)
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // Regional hotspots
+  const regionMap = {};
+  transactions.forEach((t) => {
+    const r = t.region || t.shop_location || 'Unknown';
+    if (!regionMap[r]) regionMap[r] = { region: r, transactions: 0, violations: 0 };
+    regionMap[r].transactions += 1;
+    if (t.status === 'rejected') regionMap[r].violations += 1;
+  });
+  const hotspotAreas = Object.values(regionMap).sort(
+    (a, b) => b.transactions - a.transactions
+  );
+
+  return {
+    totalTransactions: transactions.length,
+    approvedCount: approved.length,
+    rejectedCount: rejected.length,
+    totalRevenue: approved.reduce((s, t) => s + (t.amount || 0), 0),
+    dailyTrend,
+    alcoholDistribution,
+    hotspotAreas,
+  };
+};
+
+/* ─── Provider ─────────────────────────────────────────────── */
 
 export function DataProvider({ children }) {
   const { userProfile } = useAuth();
-  const [transactions, setTransactions] = useState([]);
+
+  const [transactions, setTransactions]   = useState([]);
   const [buyerProfiles, setBuyerProfiles] = useState({});
-  const [policies, setPolicies] = useState(null);
-  const [auditLogs, setAuditLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [policies, setPolicies]           = useState(null);
+  const [auditLogs, setAuditLogs]         = useState([]);
+  const [serverAnalytics, setServerAnalytics] = useState(null); // from /api/analytics
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState(null);
 
-  // BUG 7 FIX — analytics computed via useMemo, never stale
+  /* ─── BUG 7 FIX: analytics via useMemo — never stale ─────── */
   const analytics = useMemo(() => {
-    if (transactions.length === 0 && Object.keys(buyerProfiles).length === 0) {
-      return DEMO_ANALYTICS;
+    const base = buildAnalyticsFromTxns(transactions);
+    // Merge server aggregates (include daily trend from server if available)
+    if (serverAnalytics) {
+      return {
+        ...base,
+        dailyTrend: serverAnalytics.dailyTrend?.length
+          ? serverAnalytics.dailyTrend
+          : base.dailyTrend,
+        alcoholDistribution: serverAnalytics.alcoholDistribution?.length
+          ? serverAnalytics.alcoholDistribution
+          : base.alcoholDistribution,
+        hotspotAreas: serverAnalytics.hotspotAreas?.length
+          ? serverAnalytics.hotspotAreas
+          : base.hotspotAreas,
+        highRiskBuyers: serverAnalytics.highRiskBuyers || 0,
+      };
     }
-    const approved = transactions.filter((t) => t.status === 'approved');
-    const rejected = transactions.filter((t) => t.status === 'rejected');
+    return base;
+  }, [transactions, buyerProfiles, serverAnalytics]);
 
-    // Build daily trend from transaction timestamps
-    const trendMap = {};
-    transactions.forEach((t) => {
-      const d = new Date(t.timestamp).toISOString().split('T')[0];
-      if (!trendMap[d]) trendMap[d] = { date: d, approved: 0, rejected: 0 };
-      trendMap[d][t.status] += 1;
-    });
-    const dailyTrend = Object.values(trendMap).sort((a, b) => a.date.localeCompare(b.date));
-
-    // Alcohol distribution
-    const typeMap = {};
-    transactions.forEach((t) => {
-      typeMap[t.alcoholType] = (typeMap[t.alcoholType] || 0) + 1;
-    });
-    const alcoholDistribution = Object.entries(typeMap)
-      .map(([type, count]) => ({ type, count }))
-      .sort((a, b) => b.count - a.count);
-
-    // Regional hotspots
-    const regionMap = {};
-    transactions.forEach((t) => {
-      const r = t.region || 'Unknown';
-      if (!regionMap[r]) regionMap[r] = { region: r, transactions: 0, violations: 0 };
-      regionMap[r].transactions += 1;
-      if (t.status === 'rejected') regionMap[r].violations += 1;
-    });
-    const hotspotAreas = Object.values(regionMap).sort((a, b) => b.transactions - a.transactions);
-
-    return {
-      totalTransactions: transactions.length,
-      approvedCount: approved.length,
-      rejectedCount: rejected.length,
-      totalRevenue: approved.reduce((sum, t) => sum + (t.amount || 0), 0),
-      dailyTrend: dailyTrend.length > 0 ? dailyTrend : DEMO_ANALYTICS.dailyTrend,
-      alcoholDistribution: alcoholDistribution.length > 0 ? alcoholDistribution : DEMO_ANALYTICS.alcoholDistribution,
-      hotspotAreas: hotspotAreas.length > 0 ? hotspotAreas : DEMO_ANALYTICS.hotspotAreas,
-      riskDistribution: DEMO_ANALYTICS.riskDistribution,
-      shopActivity: DEMO_ANALYTICS.shopActivity,
-      weeklyComparison: DEMO_ANALYTICS.weeklyComparison,
-    };
-  }, [transactions, buyerProfiles]); // ← dependencies, never stale
-
-  // Load initial data
+  /* ─── Load based on role ─────────────────────────────────── */
   useEffect(() => {
-    if (!userProfile) {
-      setLoading(false);
-      return;
-    }
+    if (!userProfile) return;
     loadData();
   }, [userProfile]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    if (!userProfile) return;
     setLoading(true);
+    setError(null);
     try {
-      if (IS_DEMO_MODE) {
-        loadDemoData();
-      } else {
-        await loadFirestoreData();
+      switch (userProfile.role) {
+        case 'authority':
+          await loadAuthorityData();
+          break;
+        case 'shop':
+          await loadShopData();
+          break;
+        case 'buyer':
+          await loadBuyerData();
+          break;
+        default:
+          break;
       }
     } catch (err) {
-      console.error('Error loading data:', err);
-      loadDemoData();
+      console.error('[DataContext] load error:', err.message);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [userProfile]);
 
-  const loadDemoData = () => {
-    setTransactions(DEMO_TRANSACTIONS);
-    setBuyerProfiles(DEMO_BUYER_PROFILES);
-    setPolicies(DEMO_POLICIES.current);
-    setAuditLogs(DEMO_AUDIT_LOGS);
-  };
+  /* ─── Authority: load everything in parallel ─────────────── */
+  const loadAuthorityData = async () => {
+    const [analyticsData, policiesData, txData, logsData] = await Promise.allSettled([
+      analyticsService.getSummary(),
+      policyService.getCurrentPolicy(),
+      txService.getAllTransactions({ limit: 200 }),
+      getAuditLogs({ limit: 100 }),
+    ]);
 
-  const loadFirestoreData = async () => {
-    try {
-      const txnSnap = await getDocs(
-        query(collection(db, 'transactions'), orderBy('timestamp', 'desc'), limit(500))
-      );
-      setTransactions(txnSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-
-      const profilesSnap = await getDocs(collection(db, 'buyerProfiles'));
-      const profiles = {};
-      profilesSnap.docs.forEach((d) => {
-        // BUG 4 FIX — decrypt sensitive fields on read
-        const data = d.data();
-        profiles[d.id] = {
-          id: d.id,
-          ...data,
-          // Decrypt encrypted fields if they exist
-          buyerId: data.buyerId_enc ? decrypt(data.buyerId_enc) : (data.buyerId || d.id),
-        };
-      });
-      setBuyerProfiles(profiles);
-
-      const policyDoc = await getDoc(doc(db, 'policies', 'current'));
-      if (policyDoc.exists()) setPolicies(policyDoc.data());
-
-      const logsSnap = await getDocs(
-        query(collection(db, 'auditLogs'), orderBy('timestamp', 'desc'), limit(200))
-      );
-      setAuditLogs(logsSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch (error) {
-      console.error('Firestore load error:', error);
-      loadDemoData();
+    if (analyticsData.status === 'fulfilled') setServerAnalytics(analyticsData.value);
+    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+    if (txData.status === 'fulfilled') {
+      const rows = txData.value?.rows || txData.value || [];
+      setTransactions(rows);
+    }
+    if (logsData.status === 'fulfilled') {
+      setAuditLogs(logsData.value?.logs || logsData.value || []);
     }
   };
 
-  // Policy Engine
+  /* ─── Shop: load shop transactions + policy ──────────────── */
+  const loadShopData = async () => {
+    const shopId = userProfile.id;
+    const [txData, policiesData] = await Promise.allSettled([
+      txService.getShopHistory(shopId),
+      policyService.getCurrentPolicy(),
+    ]);
+    if (txData.status === 'fulfilled') setTransactions(txData.value || []);
+    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+  };
+
+  /* ─── Buyer: load profile + purchase history + policy ────── */
+  const loadBuyerData = async () => {
+    const buyerId = userProfile.id;
+    const [profileData, txData, policiesData] = await Promise.allSettled([
+      buyerService.getBuyerProfile(buyerId),
+      txService.getBuyerHistory(buyerId),
+      policyService.getCurrentPolicy(),
+    ]);
+
+    if (profileData.status === 'fulfilled' && profileData.value) {
+      const p = profileData.value;
+      setBuyerProfiles({ [buyerId]: normalizeProfile(p, buyerId) });
+    }
+    if (txData.status === 'fulfilled') setTransactions(txData.value || []);
+    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+  };
+
+  /* ─── Normalizers: snake_case → camelCase for UI ────────── */
+  const normalizePolicy = (raw) => {
+    if (!raw) return null;
+    return {
+      ...raw,
+      emergencyFlag:         raw.emergency_flag ?? raw.emergencyFlag ?? false,
+      timeRestrictionStart:  raw.time_restriction_start || raw.timeRestrictionStart,
+      timeRestrictionEnd:    raw.time_restriction_end   || raw.timeRestrictionEnd,
+      dailyLimit:            raw.daily_limit   || raw.dailyLimit,
+      weeklyLimit:           raw.weekly_limit  || raw.weeklyLimit,
+      monthlyLimit:          raw.monthly_limit || raw.monthlyLimit,
+    };
+  };
+
+  const normalizeProfile = (raw, id) => ({
+    ...raw,
+    buyerId:          String(raw.buyer_id || id),
+    name:             raw.name,
+    dailyRemaining:   raw.daily_remaining  ?? raw.dailyRemaining  ?? 0,
+    weeklyRemaining:  raw.weekly_remaining ?? raw.weeklyRemaining ?? 0,
+    monthlyRemaining: raw.monthly_remaining ?? raw.monthlyRemaining ?? 0,
+    dailyLimit:       raw.daily_limit  ?? raw.dailyLimit  ?? 2,
+    weeklyLimit:      raw.weekly_limit ?? raw.weeklyLimit ?? 10,
+    monthlyLimit:     raw.monthly_limit ?? raw.monthlyLimit ?? 30,
+    riskScore:        raw.risk_score ?? raw.riskScore ?? 0,
+    blacklistStatus:  raw.blacklist_status ?? raw.blacklistStatus ?? false,
+    region:           raw.shop_location || raw.region || '',
+  });
+
+  /* ─── validateTransaction (client-side pre-check) ─────────── */
   const validateTransaction = useCallback(
     (buyerId, quantity, alcoholType) => {
-      const profile = buyerProfiles[buyerId];
-      const policy = policies;
+      const profile = buyerProfiles[buyerId] || buyerProfiles[String(buyerId)];
+      const policy  = policies;
 
       if (!profile || !policy) {
-        return { valid: false, reason: 'Buyer profile or policy not found' };
+        return { valid: false, reason: 'Buyer profile or policy not loaded' };
       }
       if (profile.blacklistStatus) {
-        return { valid: false, reason: 'Buyer blacklisted' };
+        return { valid: false, reason: 'Buyer is blacklisted' };
       }
       if (policy.emergencyFlag) {
         return { valid: false, reason: 'Emergency restriction in effect' };
       }
 
-      // Time restriction with overnight window support (mirrors backend fix)
+      // Time restriction (mirrors backend fix — overnight window support)
       const now = new Date();
-      const cur = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const cur = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
       if (policy.timeRestrictionStart && policy.timeRestrictionEnd) {
         const s = policy.timeRestrictionStart.slice(0, 5);
         const e = policy.timeRestrictionEnd.slice(0, 5);
-        let outside;
-        if (s <= e) {
-          outside = cur < s || cur > e;
-        } else {
-          // Overnight: allowed if cur >= s OR cur <= e
-          outside = cur < s && cur > e;
-        }
+        const outside = s <= e ? (cur < s || cur > e) : (cur < s && cur > e);
         if (outside) {
-          return { valid: false, reason: `Time restriction active (${s} - ${e})` };
+          return { valid: false, reason: `Outside purchase hours (${s}–${e})` };
         }
       }
 
       if (profile.dailyRemaining < quantity) {
-        return { valid: false, reason: `Daily quota exceeded (${profile.dailyRemaining} remaining)` };
+        return { valid: false, reason: `Daily quota exceeded (${profile.dailyRemaining} units left)` };
       }
       if (profile.weeklyRemaining < quantity) {
-        return { valid: false, reason: `Weekly quota exceeded (${profile.weeklyRemaining} remaining)` };
+        return { valid: false, reason: `Weekly quota exceeded (${profile.weeklyRemaining} units left)` };
       }
       if (profile.monthlyRemaining < quantity) {
-        return { valid: false, reason: `Monthly quota exceeded (${profile.monthlyRemaining} remaining)` };
-      }
-
-      // Duplicate transaction guard (10-min window)
-      const recentTxn = transactions.find((t) => {
-        if (t.buyerId !== buyerId || t.alcoholType !== alcoholType) return false;
-        const txnTime = t.timestamp instanceof Date ? t.timestamp : new Date(t.timestamp);
-        return (now - txnTime) / 60000 < 10;
-      });
-      if (recentTxn) {
-        return { valid: false, reason: 'Duplicate transaction within 10 min' };
+        return { valid: false, reason: `Monthly quota exceeded (${profile.monthlyRemaining} units left)` };
       }
 
       return { valid: true, reason: null };
     },
-    [buyerProfiles, policies, transactions]
+    [buyerProfiles, policies]
   );
 
-  // Submit transaction (BUG 4 FIX — encrypt buyer_id on POST)
-  const submitTransaction = async (transactionData) => {
-    const { buyerId, alcoholType, quantity } = transactionData;
-    const validation = validateTransaction(buyerId, quantity, alcoholType);
+  /* ─── submitTransaction ────────────────────────────────────── */
+  const submitTransaction = useCallback(async (data) => {
+    try {
+      const result = await txService.submitTransaction({
+        buyer_id:     data.buyerId || data.buyer_id,
+        alcohol_type: data.alcoholType || data.alcohol_type,
+        quantity:     data.quantity,
+      });
 
-    const newTxn = {
-      ...transactionData,
-      status: validation.valid ? 'approved' : 'rejected',
-      reason: validation.reason,
-      timestamp: new Date(),
-      id: `txn-${Date.now()}`,
-    };
-
-    if (IS_DEMO_MODE) {
+      // Optimistic update: add to local transaction list
+      const newTxn = {
+        id:           result.transaction_id,
+        buyer_id:     data.buyerId || data.buyer_id,
+        alcohol_type: data.alcoholType || data.alcohol_type,
+        quantity:     data.quantity,
+        status:       'approved',
+        timestamp:    new Date().toISOString(),
+        ...result,
+      };
       setTransactions((prev) => [newTxn, ...prev]);
 
-      if (validation.valid) {
-        setBuyerProfiles((prev) => ({
-          ...prev,
-          [buyerId]: {
-            ...prev[buyerId],
-            dailyRemaining: Math.max(0, prev[buyerId].dailyRemaining - quantity),
-            weeklyRemaining: Math.max(0, prev[buyerId].weeklyRemaining - quantity),
-            monthlyRemaining: Math.max(0, prev[buyerId].monthlyRemaining - quantity),
-            totalPurchases: (prev[buyerId].totalPurchases || 0) + 1,
-            lastPurchase: new Date(),
-          },
-        }));
-      } else {
-        setBuyerProfiles((prev) => ({
-          ...prev,
-          [buyerId]: {
-            ...prev[buyerId],
-            riskScore: Math.min(100, (prev[buyerId].riskScore || 0) + 5),
-          },
-        }));
+      // Refresh buyer quota after approved sale
+      const buyerId = data.buyerId || data.buyer_id;
+      if (buyerId) {
+        try {
+          const fresh = await buyerService.getBuyerProfile(buyerId);
+          if (fresh) {
+            setBuyerProfiles((prev) => ({
+              ...prev,
+              [buyerId]: normalizeProfile(fresh, buyerId),
+            }));
+          }
+        } catch (_) { /* non-fatal */ }
       }
-    } else {
-      try {
-        // BUG 4 FIX: encrypt buyer_id before storing
-        await addDoc(collection(db, 'transactions'), {
-          ...newTxn,
-          buyerId_enc: encrypt(String(buyerId)), // encrypted field
-          timestamp: serverTimestamp(),
-        });
 
-        if (validation.valid) {
-          await updateDoc(doc(db, 'buyerProfiles', buyerId), {
-            dailyRemaining: Math.max(0, buyerProfiles[buyerId].dailyRemaining - quantity),
-            weeklyRemaining: Math.max(0, buyerProfiles[buyerId].weeklyRemaining - quantity),
-            monthlyRemaining: Math.max(0, buyerProfiles[buyerId].monthlyRemaining - quantity),
-          });
-        } else {
-          await updateDoc(doc(db, 'buyerProfiles', buyerId), {
-            riskScore: Math.min(100, (buyerProfiles[buyerId].riskScore || 0) + 5),
-          });
-        }
-
-        await addDoc(collection(db, 'auditLogs'), {
-          eventType: validation.valid ? 'TRANSACTION' : 'REJECTION',
-          userId: userProfile?.uid,
-          role: userProfile?.role,
-          details: `Transaction ${newTxn.id} ${newTxn.status} for ${buyerId}`,
-          timestamp: serverTimestamp(),
-        });
-
-        await loadFirestoreData();
-      } catch (err) {
-        console.error('Error submitting transaction:', err);
-        throw err;
-      }
+      return newTxn;
+    } catch (err) {
+      const reason = err.response?.data?.error || err.message || 'Transaction failed';
+      // Return rejected txn shape so UI can display the reason
+      return {
+        status: 'rejected',
+        reason,
+        id: `local-${Date.now()}`,
+      };
     }
+  }, []);
 
-    return newTxn;
-  };
+  /* ─── updatePolicies ────────────────────────────────────────── */
+  const updatePolicies = useCallback(async (newPolicies) => {
+    await policyService.updatePolicy({
+      daily_limit:            newPolicies.dailyLimit   || newPolicies.daily_limit,
+      weekly_limit:           newPolicies.weeklyLimit  || newPolicies.weekly_limit,
+      monthly_limit:          newPolicies.monthlyLimit || newPolicies.monthly_limit,
+      time_restriction_start: newPolicies.timeRestrictionStart || newPolicies.time_restriction_start,
+      time_restriction_end:   newPolicies.timeRestrictionEnd   || newPolicies.time_restriction_end,
+    });
+    // Refresh
+    const fresh = await policyService.getCurrentPolicy();
+    setPolicies(normalizePolicy(fresh));
+    setAuditLogs((prev) => [{
+      id: `local-${Date.now()}`,
+      event_type: 'policy_change',
+      user_role: 'authority',
+      details: 'Policies updated',
+      timestamp: new Date().toISOString(),
+    }, ...prev]);
+  }, []);
 
-  // Update policies
-  const updatePolicies = async (newPolicies) => {
-    const updated = { ...newPolicies, lastUpdated: new Date(), updatedBy: userProfile?.uid };
-
-    if (IS_DEMO_MODE) {
-      setPolicies(updated);
-      setAuditLogs((prev) => [
-        {
-          id: `log-${Date.now()}`,
-          eventType: 'POLICY_UPDATE',
-          userId: userProfile?.uid,
-          role: 'authority',
-          details: 'Policies updated',
-          timestamp: new Date(),
-        },
-        ...prev,
-      ]);
-    } else {
-      await setDoc(doc(db, 'policies', 'current'), updated);
-      await addDoc(collection(db, 'auditLogs'), {
-        eventType: 'POLICY_UPDATE',
-        userId: userProfile?.uid,
-        role: 'authority',
-        details: 'Policies updated',
-        timestamp: serverTimestamp(),
-      });
-      setPolicies(updated);
-    }
-  };
-
-  const toggleEmergency = async () => {
+  /* ─── toggleEmergency ──────────────────────────────────────── */
+  const toggleEmergency = useCallback(async () => {
     const newFlag = !policies?.emergencyFlag;
-    await updatePolicies({ ...policies, emergencyFlag: newFlag });
+    await policyService.toggleEmergency(newFlag);
+    setPolicies((prev) => ({ ...prev, emergencyFlag: newFlag }));
+    // Emit socket event is handled server-side; UI updates via socket hook
     return newFlag;
-  };
+  }, [policies]);
 
-  const toggleBlacklist = async (buyerId) => {
-    const profile = buyerProfiles[buyerId];
-    if (!profile) return;
-    const newStatus = !profile.blacklistStatus;
-
-    if (IS_DEMO_MODE) {
+  /* ─── toggleBlacklist ──────────────────────────────────────── */
+  const toggleBlacklist = useCallback(async (buyerId) => {
+    await buyerService.toggleBlacklist(buyerId);
+    // Refresh buyer profile
+    try {
+      const fresh = await buyerService.getBuyerProfile(buyerId);
       setBuyerProfiles((prev) => ({
         ...prev,
-        [buyerId]: { ...prev[buyerId], blacklistStatus: newStatus },
+        [buyerId]: normalizeProfile(fresh, buyerId),
       }));
-      setAuditLogs((prev) => [
-        {
-          id: `log-${Date.now()}`,
-          eventType: 'BLACKLIST',
-          userId: userProfile?.uid,
-          role: 'authority',
-          details: `Buyer ${buyerId} ${newStatus ? 'blacklisted' : 'unblacklisted'}`,
-          timestamp: new Date(),
-        },
+    } catch (_) {
+      // Optimistic toggle fallback
+      setBuyerProfiles((prev) => ({
         ...prev,
-      ]);
-    } else {
-      await updateDoc(doc(db, 'buyerProfiles', buyerId), { blacklistStatus: newStatus });
-      await addDoc(collection(db, 'auditLogs'), {
-        eventType: 'BLACKLIST',
-        userId: userProfile?.uid,
-        role: 'authority',
-        details: `Buyer ${buyerId} ${newStatus ? 'blacklisted' : 'unblacklisted'}`,
-        timestamp: serverTimestamp(),
-      });
-      await loadFirestoreData();
+        [buyerId]: {
+          ...prev[buyerId],
+          blacklistStatus: !prev[buyerId]?.blacklistStatus,
+        },
+      }));
     }
-  };
+  }, []);
 
+  /* ─── Helpers for components ────────────────────────────────── */
   const getBuyerTransactions = useCallback(
-    (buyerId) => transactions.filter((t) => t.buyerId === buyerId),
+    (buyerId) => transactions.filter(
+      (t) => String(t.buyer_id || t.buyerId) === String(buyerId)
+    ),
     [transactions]
   );
 
   const getShopTransactions = useCallback(
-    (shopId) => transactions.filter((t) => t.shopId === shopId),
+    (shopId) => transactions.filter(
+      (t) => String(t.shop_id || t.shopId) === String(shopId)
+    ),
     [transactions]
   );
 
@@ -366,6 +381,7 @@ export function DataProvider({ children }) {
     auditLogs,
     analytics,
     loading,
+    error,
     submitTransaction,
     validateTransaction,
     updatePolicies,
@@ -374,6 +390,9 @@ export function DataProvider({ children }) {
     getBuyerTransactions,
     getShopTransactions,
     refreshData: loadData,
+    // Expose setters for socket hook to update live
+    setTransactions,
+    setPolicies,
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

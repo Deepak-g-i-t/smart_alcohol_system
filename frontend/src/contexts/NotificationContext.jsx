@@ -1,8 +1,7 @@
 /**
- * NotificationContext — global notification state (Priority 2.5)
- * Persists to localStorage, routes alerts through react-hot-toast.
+ * NotificationContext — toast state + unread bell count
  */
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
 
 const NotificationContext = createContext(null);
@@ -13,91 +12,57 @@ export function useNotifications() {
   return ctx;
 }
 
-const STORAGE_KEY = 'slmrs_notifications';
-
-const loadFromStorage = () => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-  } catch {
-    return [];
-  }
-};
-
-const saveToStorage = (items) => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, 100))); // cap at 100
-};
-
 export function NotificationProvider({ children }) {
-  const [notifications, setNotifications] = useState(loadFromStorage);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount]     = useState(0);
 
-  // Persist on change
-  useEffect(() => {
-    saveToStorage(notifications);
-  }, [notifications]);
-
-  const unreadCount = notifications.filter((n) => !n.read).length;
-
-  const addNotification = useCallback(({ type, title, message }) => {
-    const note = {
-      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      type,
-      title,
-      message,
-      read: false,
-      createdAt: new Date().toISOString(),
+  const addNotification = useCallback((notification) => {
+    const n = {
+      id:        `n-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      read:      false,
+      ...notification,
     };
 
-    setNotifications((prev) => [note, ...prev]);
+    setNotifications((prev) => [n, ...prev.slice(0, 49)]);
+    setUnreadCount((prev) => prev + 1);
 
-    // Route through react-hot-toast
-    const toastOptions = {
-      duration: 5000,
+    // Show toast based on type
+    const opts = {
       style: {
-        background: 'rgba(15, 18, 38, 0.95)',
-        border: '1px solid rgba(45, 53, 85, 0.6)',
+        background: 'rgba(15,18,38,0.95)',
+        border: `1px solid ${
+          n.type === 'error'   ? 'rgba(255,23,68,0.3)' :
+          n.type === 'warning' ? 'rgba(255,171,0,0.3)' :
+                                 'rgba(0,230,118,0.3)'
+        }`,
         color: '#d1d5e0',
-        backdropFilter: 'blur(20px)',
       },
     };
 
-    switch (type) {
-      case 'emergency':
-        toast.error(`🚨 ${title}: ${message}`, toastOptions);
-        break;
-      case 'risk_escalation':
-        toast(`⚠️ ${title}: ${message}`, { ...toastOptions, icon: '⚠️' });
-        break;
-      case 'quota_warning':
-        toast(`📊 ${title}: ${message}`, toastOptions);
-        break;
-      case 'inventory_low':
-        toast(`📦 ${title}: ${message}`, { ...toastOptions, icon: '📦' });
-        break;
-      default:
-        toast(message, toastOptions);
-    }
-
-    return note;
-  }, []);
-
-  const markRead = useCallback((id) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-    );
+    if (n.type === 'error')   toast.error(n.message, opts);
+    else if (n.type === 'warning') toast(n.message, { ...opts, icon: '⚠️' });
+    else                       toast.success(n.message, opts);
   }, []);
 
   const markAllRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setUnreadCount(0);
   }, []);
 
   const clearAll = useCallback(() => {
     setNotifications([]);
+    setUnreadCount(0);
   }, []);
 
   return (
-    <NotificationContext.Provider
-      value={{ notifications, unreadCount, addNotification, markRead, markAllRead, clearAll }}
-    >
+    <NotificationContext.Provider value={{
+      notifications,
+      unreadCount,
+      addNotification,
+      markAllRead,
+      clearAll,
+    }}>
       {children}
     </NotificationContext.Provider>
   );

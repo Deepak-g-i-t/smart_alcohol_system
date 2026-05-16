@@ -1,31 +1,34 @@
 version: '3.8'
 
 services:
+  # ── MySQL 8.0 ──────────────────────────────────────────────
   mysql:
     image: mysql:8.0
-    container_name: alcohol_mysql
+    container_name: slmrs_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: smart_alcohol_system
-      MYSQL_USER: ${MYSQL_USER:-alcohol_user}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-alcohol_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE:      smart_alcohol_system
+      MYSQL_USER:          ${MYSQL_USER:-alcohol_user}
+      MYSQL_PASSWORD:      ${MYSQL_PASSWORD:-alcohol_password}
     ports:
       - "3306:3306"
     volumes:
-      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./schema_additions.sql:/docker-entrypoint-initdb.d/02_additions.sql
       - mysql_data:/var/lib/mysql
     networks:
-      - alcohol_network
+      - slmrs_network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ── MongoDB 6.0 ────────────────────────────────────────────
   mongodb:
     image: mongo:6.0
-    container_name: alcohol_mongo
+    container_name: slmrs_mongo
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
@@ -35,74 +38,80 @@ services:
     volumes:
       - mongo_data:/data/db
     networks:
-      - alcohol_network
+      - slmrs_network
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ── Express Backend ────────────────────────────────────────
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: alcohol_backend
+    container_name: slmrs_backend
     restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
-      - NODE_ENV=production
-      - PORT=5000
-      - MYSQL_HOST=mysql
-      - MYSQL_USER=${MYSQL_USER:-alcohol_user}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-alcohol_password}
-      - MYSQL_DB=smart_alcohol_system
-      - MONGO_URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-adminpassword}@mongodb:27017/alcohol_logs?authSource=admin
-      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
-      - CORS_ORIGINS=http://localhost,http://localhost:80,http://nginx
-      - OTP_ENABLED=${OTP_ENABLED:-false}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
+      NODE_ENV:       production
+      PORT:           5000
+      MYSQL_HOST:     mysql
+      MYSQL_PORT:     3306
+      MYSQL_USER:     ${MYSQL_USER:-alcohol_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-alcohol_password}
+      MYSQL_DB:       smart_alcohol_system
+      MONGO_URI:      mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-adminpassword}@mongodb:27017/alcohol_logs?authSource=admin
+      JWT_SECRET:     ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      CORS_ORIGINS:   http://localhost,http://localhost:80,http://nginx,http://slmrs_nginx
+      OTP_ENABLED:    ${OTP_ENABLED:-false}
+      LOG_LEVEL:      ${LOG_LEVEL:-info}
     depends_on:
       mysql:
         condition: service_healthy
       mongodb:
         condition: service_healthy
     networks:
-      - alcohol_network
+      - slmrs_network
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
+  # ── React Frontend (built by nginx) ───────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: alcohol_frontend
+    container_name: slmrs_frontend
     restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL:  http://localhost/api
+      VITE_SOCKET_URL:    http://localhost
     networks:
-      - alcohol_network
+      - slmrs_network
     depends_on:
       - backend
 
+  # ── Nginx reverse proxy ────────────────────────────────────
   nginx:
     image: nginx:alpine
-    container_name: alcohol_nginx
+    container_name: slmrs_nginx
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - backend
       - frontend
     networks:
-      - alcohol_network
+      - slmrs_network
 
 networks:
-  alcohol_network:
+  slmrs_network:
     driver: bridge
 
 volumes:

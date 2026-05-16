@@ -98,6 +98,11 @@ const toggleEmergency = async (req, res, next) => {
     await logEvent('policy_change', req.user.id, req.user.role,
       { updateType: 'emergency_toggle', flag: emergency_flag }, req.ip);
 
+    // Task 6 — broadcast emergency state change to all connected clients
+    try {
+      req.app.get('io')?.emit('emergency_toggle', { flag: !!emergency_flag });
+    } catch (_) { /* socket emit is non-fatal */ }
+
     res.status(200).json({
       message: `Emergency mode ${emergency_flag ? 'ACTIVATED' : 'DEACTIVATED'}`,
       emergency_flag: !!emergency_flag,

@@ -1,160 +1,154 @@
-// Authentication Context - handles both Firebase and Demo mode auth
-import { createContext, useContext, useState, useEffect } from 'react';
-import { 
-  signInWithEmailAndPassword, 
-  signOut as firebaseSignOut, 
-  onAuthStateChanged,
-  createUserWithEmailAndPassword,
-} from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { auth, db, IS_DEMO_MODE } from '../firebase/config';
-import { DEMO_USERS, DEMO_CREDENTIALS } from '../data/demoData';
+/**
+ * AuthContext — pure Express/JWT authentication (no Firebase).
+ *
+ * Storage:
+ *   localStorage('slmrs_token')  — raw JWT string
+ *   localStorage('slmrs_user')   — JSON { id, role, name, email }
+ *
+ * Exported interface is identical to the old Firebase version so all
+ * consuming components continue to work without changes.
+ */
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { jwtDecode } from 'jwt-decode';
+import * as authService from '../api/authService';
 
 const AuthContext = createContext(null);
 
 export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within AuthProvider');
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
 }
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [userProfile, setUserProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+/* ─── Helpers ─────────────────────────────────────────────── */
 
-  useEffect(() => {
-    // Check for persisted demo session
-    if (IS_DEMO_MODE) {
-      const savedUser = localStorage.getItem('slmrs_demo_user');
-      if (savedUser) {
-        try {
-          const parsed = JSON.parse(savedUser);
-          setUser(parsed);
-          setUserProfile(parsed);
-        } catch (e) {
-          localStorage.removeItem('slmrs_demo_user');
-        }
-      }
-      setLoading(false);
-      return;
+const STORAGE_TOKEN = 'slmrs_token';
+const STORAGE_USER  = 'slmrs_user';
+
+const readStoredUser = () => {
+  try {
+    const token = localStorage.getItem(STORAGE_TOKEN);
+    if (!token) return null;
+
+    const decoded = jwtDecode(token);
+
+    // Validate expiry
+    if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+      localStorage.removeItem(STORAGE_TOKEN);
+      localStorage.removeItem(STORAGE_USER);
+      return null;
     }
 
-    // Firebase auth state listener
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        // Fetch user profile from Firestore
-        try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
-            setUserProfile({ uid: firebaseUser.uid, ...userDoc.data() });
-          }
-        } catch (err) {
-          console.error('Error fetching user profile:', err);
-        }
-      } else {
-        setUser(null);
-        setUserProfile(null);
-      }
-      setLoading(false);
-    });
+    // Prefer the full profile stored at login (has email, name)
+    const stored = localStorage.getItem(STORAGE_USER);
+    if (stored) return JSON.parse(stored);
 
-    return () => unsubscribe();
+    // Fallback to decoded payload
+    return { id: decoded.id, role: decoded.role, name: decoded.name || '' };
+  } catch {
+    localStorage.removeItem(STORAGE_TOKEN);
+    localStorage.removeItem(STORAGE_USER);
+    return null;
+  }
+};
+
+const persistAuth = (token, profile) => {
+  localStorage.setItem(STORAGE_TOKEN, token);
+  localStorage.setItem(STORAGE_USER, JSON.stringify(profile));
+};
+
+const clearAuth = () => {
+  localStorage.removeItem(STORAGE_TOKEN);
+  localStorage.removeItem(STORAGE_USER);
+};
+
+/* ─── Provider ─────────────────────────────────────────────── */
+
+export function AuthProvider({ children }) {
+  const [user, setUser]       = useState(readStoredUser);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+
+  // Re-read on mount in case another tab changed storage
+  useEffect(() => {
+    const stored = readStoredUser();
+    setUser(stored);
   }, []);
 
-  const signIn = async (email, password) => {
+  /* ─── signIn ─────────────────────────────────────────────── */
+  const signIn = useCallback(async (email, password) => {
     setError(null);
     setLoading(true);
-    
     try {
-      if (IS_DEMO_MODE) {
-        // Demo mode login
-        const demoUser = Object.values(DEMO_USERS).find(u => u.email === email);
-        if (!demoUser) {
-          throw new Error('Invalid credentials. Use demo accounts shown below.');
-        }
-        // Simulate auth delay
-        await new Promise(resolve => setTimeout(resolve, 800));
-        setUser(demoUser);
-        setUserProfile(demoUser);
-        localStorage.setItem('slmrs_demo_user', JSON.stringify(demoUser));
-        return demoUser;
-      }
-
-      // Firebase login
-      const result = await signInWithEmailAndPassword(auth, email, password);
-      const userDoc = await getDoc(doc(db, 'users', result.user.uid));
-      if (userDoc.exists()) {
-        const profile = { uid: result.user.uid, ...userDoc.data() };
-        setUserProfile(profile);
-        return profile;
-      }
-      throw new Error('User profile not found in database.');
+      const data = await authService.login(email, password);
+      // data = { token, role, name, id }
+      const profile = { id: data.id, role: data.role, name: data.name, email };
+      persistAuth(data.token, profile);
+      setUser(profile);
+      return { role: data.role };
     } catch (err) {
-      const message = err.code === 'auth/invalid-credential' 
-        ? 'Invalid email or password'
-        : err.message;
-      setError(message);
-      throw new Error(message);
+      const msg = err.response?.data?.error || err.message || 'Login failed';
+      setError(msg);
+      throw new Error(msg);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const signOut = async () => {
-    try {
-      if (IS_DEMO_MODE) {
-        localStorage.removeItem('slmrs_demo_user');
-      } else {
-        await firebaseSignOut(auth);
-      }
-      setUser(null);
-      setUserProfile(null);
-    } catch (err) {
-      console.error('Sign out error:', err);
-    }
-  };
-
-  const registerUser = async (email, password, userData) => {
+  /* ─── signOut ────────────────────────────────────────────── */
+  const signOut = useCallback(() => {
+    clearAuth();
+    setUser(null);
     setError(null);
-    try {
-      if (IS_DEMO_MODE) {
-        throw new Error('Registration disabled in demo mode');
-      }
-      const result = await createUserWithEmailAndPassword(auth, email, password);
-      await setDoc(doc(db, 'users', result.user.uid), {
-        ...userData,
-        uid: result.user.uid,
-        email,
-        createdAt: new Date(),
-      });
-      return result.user;
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    }
-  };
+    // Navigate happens in the caller (Sidebar) via navigate('/login')
+  }, []);
 
+  /* ─── registerUser ───────────────────────────────────────── */
+  const registerUser = useCallback(async (userData) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await authService.register(userData);
+      // Backend returns { token, role, name, id } on success (auto-login)
+      if (data.token) {
+        const profile = {
+          id: data.id,
+          role: data.role,
+          name: data.name,
+          email: userData.email,
+        };
+        persistAuth(data.token, profile);
+        setUser(profile);
+      }
+      return data;
+    } catch (err) {
+      const msg =
+        err.response?.data?.error ||
+        err.response?.data?.fields?.[0]?.message ||
+        err.message ||
+        'Registration failed';
+      setError(msg);
+      throw new Error(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /* ─── Context value ─────────────────────────────────────── */
   const value = {
     user,
-    userProfile,
+    userProfile: user,       // alias — DataContext reads userProfile
     loading,
     error,
     signIn,
     signOut,
     registerUser,
     isAuthenticated: !!user,
-    isAuthority: userProfile?.role === 'authority',
-    isShop: userProfile?.role === 'shop',
-    isBuyer: userProfile?.role === 'buyer',
-    isDemoMode: IS_DEMO_MODE,
+    isAuthority: user?.role === 'authority',
+    isShop:      user?.role === 'shop',
+    isBuyer:     user?.role === 'buyer',
+    isDemoMode:  false,      // Firebase demo mode permanently removed
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
