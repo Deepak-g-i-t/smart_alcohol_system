@@ -27,10 +27,17 @@ const validateLogin = validate([
 ]);
 
 const validateRegister = validate([
-  body('name').trim().notEmpty().isLength({ max: 255 }).withMessage('Name is required'),
-  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
-  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('role').isIn(['authority', 'shop', 'buyer']).withMessage('Role must be authority, shop, or buyer'),
+  body('name')
+    .trim()
+    .notEmpty().withMessage('name is required')
+    .isLength({ max: 255 }).withMessage('name too long'),
+  body('email')
+    .trim()
+    .isEmail().withMessage('Valid email address required'),
+  body('password')
+    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  body('role')
+    .isIn(['authority', 'shop', 'buyer']).withMessage('role must be authority, shop, or buyer'),
 ]);
 
 const validateOtp = validate([

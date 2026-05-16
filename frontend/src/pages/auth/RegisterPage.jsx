@@ -95,9 +95,28 @@ export default function RegisterPage() {
 
   const [fieldErrors, setFieldErrors] = useState({});
 
+  // Role-specific field defaults — used to reset on role switch
+  const ROLE_FIELD_DEFAULTS = {
+    buyer:     { age: '', phone: '', address: '', govt_id_sim: '' },
+    shop:      { shop_name: '', license_number: '', shop_address: '', district: '', shop_phone: '' },
+    authority: { department: '', designation: '', authority_code: '' },
+  };
+
   const set = (key, val) => {
     setForm((prev) => ({ ...prev, [key]: val }));
     setFieldErrors((prev) => ({ ...prev, [key]: '' }));
+  };
+
+  // When role changes, wipe ALL role-specific fields to prevent bleed (Issue 2)
+  const setRole = (newRole) => {
+    const resetFields = {
+      ...ROLE_FIELD_DEFAULTS.buyer,
+      ...ROLE_FIELD_DEFAULTS.shop,
+      ...ROLE_FIELD_DEFAULTS.authority,
+    };
+    setForm((prev) => ({ ...prev, role: newRole, ...resetFields }));
+    setFieldErrors({});
+    setError('');
   };
 
   /* ─── Validation per step ─────────────────────────────── */
@@ -140,7 +159,18 @@ export default function RegisterPage() {
 
   const back = () => {
     setError('');
-    setStep((s) => s - 1);
+    setFieldErrors({});
+    const prevStep = step - 1;
+    // Going back to role selection: wipe role-specific fields to prevent bleed
+    if (prevStep === 1) {
+      setForm((prev) => ({
+        ...prev,
+        ...ROLE_FIELD_DEFAULTS.buyer,
+        ...ROLE_FIELD_DEFAULTS.shop,
+        ...ROLE_FIELD_DEFAULTS.authority,
+      }));
+    }
+    setStep(prevStep);
   };
 
   /* ─── Submit ────────────────────────────────────────────── */
@@ -154,30 +184,40 @@ export default function RegisterPage() {
         email:    form.email.trim().toLowerCase(),
         password: form.password,
         role:     form.role,
-        phone:    form.role === 'shop' ? form.shop_phone : form.phone,
-        address:  form.role === 'shop' ? form.shop_address : form.address,
-        district: form.district,
-        ...(form.role === 'buyer' && {
-          age:         parseInt(form.age),
-          govt_id_sim: form.govt_id_sim,
-        }),
-        ...(form.role === 'shop' && {
-          shop_name:      form.shop_name,
-          license_number: form.license_number,
-        }),
-        ...(form.role === 'authority' && {
-          department:      form.department,
-          designation:     form.designation,
-          authority_code:  form.authority_code,
-        }),
+        // Buyer fields
+        age:         form.role === 'buyer' ? parseInt(form.age) : undefined,
+        phone:       form.role === 'buyer' ? form.phone        : undefined,
+        address:     form.role === 'buyer' ? form.address      : undefined,
+        govt_id_sim: form.role === 'buyer' ? form.govt_id_sim  : undefined,
+        // Shop fields
+        shop_name:      form.role === 'shop' ? form.shop_name      : undefined,
+        license_number: form.role === 'shop' ? form.license_number  : undefined,
+        shop_address:   form.role === 'shop' ? form.shop_address    : undefined,
+        shop_phone:     form.role === 'shop' ? form.shop_phone      : undefined,
+        district:       form.role === 'shop' ? form.district        : undefined,
+        // Authority fields
+        department:     form.role === 'authority' ? form.department     : undefined,
+        designation:    form.role === 'authority' ? form.designation    : undefined,
+        authority_code: form.role === 'authority' ? form.authority_code : undefined,
       };
 
+      // Remove undefined keys before sending
+      Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+      console.log('[Register] Submitting payload:', { ...payload, password: '[REDACTED]' });
+
       const data = await registerUser(payload);
-      // registerUser auto-logs in and sets user state
+      console.log('[Register] Success:', data);
       const routes = { authority: '/authority', shop: '/shop', buyer: '/buyer' };
       navigate(routes[data.role || form.role] || '/');
     } catch (err) {
-      setError(err.message || 'Registration failed. Please try again.');
+      console.error('[Register] Error:', err);
+      // Extract meaningful message from API error response
+      const apiError = err.response?.data?.error
+        || err.response?.data?.fields?.[0]?.message
+        || err.message
+        || 'Registration failed. Please try again.';
+      setError(apiError);
     } finally {
       setLoading(false);
     }
@@ -236,7 +276,7 @@ export default function RegisterPage() {
                   <button
                     key={key}
                     type="button"
-                    onClick={() => set('role', key)}
+                    onClick={() => setRole(key)}
                     className={`w-full glass-card p-4 flex items-center gap-4 transition-all duration-200 border-2 ${
                       form.role === key
                         ? `${border} bg-dark-700/40`

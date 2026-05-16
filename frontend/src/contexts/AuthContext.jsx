@@ -112,9 +112,9 @@ export function AuthProvider({ children }) {
       // Backend returns { token, role, name, id } on success (auto-login)
       if (data.token) {
         const profile = {
-          id: data.id,
-          role: data.role,
-          name: data.name,
+          id:    data.id,
+          role:  data.role,
+          name:  data.name,
           email: userData.email,
         };
         persistAuth(data.token, profile);
@@ -122,13 +122,15 @@ export function AuthProvider({ children }) {
       }
       return data;
     } catch (err) {
+      // Extract display message but preserve original error for component access
       const msg =
         err.response?.data?.error ||
         err.response?.data?.fields?.[0]?.message ||
         err.message ||
         'Registration failed';
       setError(msg);
-      throw new Error(msg);
+      // Re-throw original so RegisterPage can read err.response.data
+      throw err;
     } finally {
       setLoading(false);
     }
