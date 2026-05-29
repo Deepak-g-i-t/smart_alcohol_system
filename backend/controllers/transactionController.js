@@ -200,9 +200,16 @@ const submitTransaction = async (req, res, next) => {
 
     // Task 6 — real-time broadcast to authority dashboard
     try {
-      req.app.get('io')?.to('role:authority').emit('transaction', {
+      req.app.get('io')?.to('role:authority').emit('new_transaction', {
         id: txId, buyer_id, shop_id, alcohol_type, quantity,
-        status: 'approved', timestamp: new Date(),
+        status: 'approved', timestamp: new Date().toISOString(),
+      });
+
+      // Notify the specific buyer their quota changed
+      req.app.get('io')?.to(`user:${buyer_id}`).emit('quota_updated', {
+        daily_remaining:   profile.daily_remaining   - quantity,
+        weekly_remaining:  profile.weekly_remaining  - quantity,
+        monthly_remaining: profile.monthly_remaining - quantity,
       });
     } catch (_) { /* socket emit is non-fatal */ }
 

@@ -8,7 +8,7 @@ export default function ShopDashboard({ user }) {
     const [quantity, setQuantity] = useState(1);
     const [statusMsg, setStatusMsg] = useState(null);
 
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
 
     const handleSubmit = async (e) => {
         e.preventDefault();

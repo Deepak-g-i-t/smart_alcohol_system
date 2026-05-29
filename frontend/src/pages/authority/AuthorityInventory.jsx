@@ -103,11 +103,10 @@ export default function AuthorityInventory() {
         </div>
         <button
           onClick={() => setShowLowOnly((p) => !p)}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 border ${
-            showLowOnly
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 border ${showLowOnly
               ? 'bg-accent-amber/20 border-accent-amber/40 text-accent-amber'
               : 'bg-dark-700 border-dark-600 text-dark-300 hover:border-accent-amber/40'
-          }`}
+            }`}
         >
           {showLowOnly ? '⚠ Low Stock Only' : 'Show Low Stock'}
         </button>

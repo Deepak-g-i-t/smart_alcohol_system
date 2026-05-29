@@ -14,8 +14,8 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
-      - ./schema_additions.sql:/docker-entrypoint-initdb.d/02_additions.sql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./migrate.sql:/docker-entrypoint-initdb.d/02_migrate.sql:ro
       - mysql_data:/var/lib/mysql
     networks:
       - slmrs_network

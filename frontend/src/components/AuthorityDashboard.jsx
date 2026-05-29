@@ -9,7 +9,7 @@ export default function AuthorityDashboard() {
 
     const [policy, setPolicy] = useState({ emergency_flag: false });
 
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
     const getHeaders = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
 
     const fetchData = async () => {

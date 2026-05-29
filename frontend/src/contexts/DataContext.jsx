@@ -6,7 +6,7 @@
  */
 import {
   createContext, useContext, useState, useEffect,
-  useCallback, useMemo,
+  useCallback, useMemo, useRef,
 } from 'react';
 import { useAuth } from './AuthContext';
 import * as txService   from '../api/transactionService';
@@ -85,8 +85,12 @@ export function DataProvider({ children }) {
   const [serverAnalytics, setServerAnalytics] = useState(null); // from /api/analytics
   const [loading, setLoading]             = useState(false);
   const [error, setError]                 = useState(null);
+  const [errors, setErrors]               = useState({});
 
-  /* ─── BUG 7 FIX: analytics via useMemo — never stale ─────── */
+  // Fix race condition: track if initial load has been attempted
+  const loadAttempted = useRef(false);
+
+  /* ─── Analytics via useMemo — never stale ──────────────────── */
   const analytics = useMemo(() => {
     const base = buildAnalyticsFromTxns(transactions);
     // Merge server aggregates (include daily trend from server if available)
@@ -108,16 +112,31 @@ export function DataProvider({ children }) {
     return base;
   }, [transactions, buyerProfiles, serverAnalytics]);
 
-  /* ─── Load based on role ─────────────────────────────────── */
+  /* ─── Load based on role — race condition fix ───────────── */
   useEffect(() => {
-    if (!userProfile) return;
-    loadData();
+    if (userProfile && !loadAttempted.current) {
+      loadAttempted.current = true;
+      loadData();
+    }
+    // Reset on signOut (userProfile becomes null)
+    if (!userProfile) {
+      loadAttempted.current = false;
+      // Clear all state for clean next login
+      setTransactions([]);
+      setBuyerProfiles({});
+      setPolicies(null);
+      setAuditLogs([]);
+      setServerAnalytics(null);
+      setErrors({});
+      setError(null);
+    }
   }, [userProfile]);
 
   const loadData = useCallback(async () => {
     if (!userProfile) return;
     setLoading(true);
     setError(null);
+    setErrors({});
     try {
       switch (userProfile.role) {
         case 'authority':
@@ -149,14 +168,33 @@ export function DataProvider({ children }) {
       getAuditLogs({ limit: 100 }),
     ]);
 
-    if (analyticsData.status === 'fulfilled') setServerAnalytics(analyticsData.value);
-    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+    if (analyticsData.status === 'fulfilled') {
+      setServerAnalytics(analyticsData.value);
+    } else {
+      console.error('[DataContext] analytics failed:', analyticsData.reason?.message);
+      setErrors(prev => ({ ...prev, analytics: analyticsData.reason?.message }));
+    }
+
+    if (policiesData.status === 'fulfilled') {
+      setPolicies(normalizePolicy(policiesData.value));
+    } else {
+      console.error('[DataContext] policies failed:', policiesData.reason?.message);
+      setErrors(prev => ({ ...prev, policies: policiesData.reason?.message }));
+    }
+
     if (txData.status === 'fulfilled') {
       const rows = txData.value?.rows || txData.value || [];
       setTransactions(rows);
+    } else {
+      console.error('[DataContext] transactions failed:', txData.reason?.message);
+      setErrors(prev => ({ ...prev, transactions: txData.reason?.message }));
     }
+
     if (logsData.status === 'fulfilled') {
       setAuditLogs(logsData.value?.logs || logsData.value || []);
+    } else {
+      console.error('[DataContext] auditLogs failed:', logsData.reason?.message);
+      setErrors(prev => ({ ...prev, auditLogs: logsData.reason?.message }));
     }
   };
 
@@ -167,8 +205,18 @@ export function DataProvider({ children }) {
       txService.getShopHistory(shopId),
       policyService.getCurrentPolicy(),
     ]);
-    if (txData.status === 'fulfilled') setTransactions(txData.value || []);
-    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+    if (txData.status === 'fulfilled') {
+      setTransactions(txData.value || []);
+    } else {
+      console.error('[DataContext] shop transactions failed:', txData.reason?.message);
+      setErrors(prev => ({ ...prev, transactions: txData.reason?.message }));
+    }
+    if (policiesData.status === 'fulfilled') {
+      setPolicies(normalizePolicy(policiesData.value));
+    } else {
+      console.error('[DataContext] shop policies failed:', policiesData.reason?.message);
+      setErrors(prev => ({ ...prev, policies: policiesData.reason?.message }));
+    }
   };
 
   /* ─── Buyer: load profile + purchase history + policy ────── */
@@ -183,9 +231,22 @@ export function DataProvider({ children }) {
     if (profileData.status === 'fulfilled' && profileData.value) {
       const p = profileData.value;
       setBuyerProfiles({ [buyerId]: normalizeProfile(p, buyerId) });
+    } else {
+      console.error('[DataContext] buyer profile failed:', profileData.reason?.message);
+      setErrors(prev => ({ ...prev, profile: profileData.reason?.message }));
     }
-    if (txData.status === 'fulfilled') setTransactions(txData.value || []);
-    if (policiesData.status === 'fulfilled') setPolicies(normalizePolicy(policiesData.value));
+    if (txData.status === 'fulfilled') {
+      setTransactions(txData.value || []);
+    } else {
+      console.error('[DataContext] buyer transactions failed:', txData.reason?.message);
+      setErrors(prev => ({ ...prev, transactions: txData.reason?.message }));
+    }
+    if (policiesData.status === 'fulfilled') {
+      setPolicies(normalizePolicy(policiesData.value));
+    } else {
+      console.error('[DataContext] buyer policies failed:', policiesData.reason?.message);
+      setErrors(prev => ({ ...prev, policies: policiesData.reason?.message }));
+    }
   };
 
   /* ─── Normalizers: snake_case → camelCase for UI ────────── */
@@ -205,6 +266,7 @@ export function DataProvider({ children }) {
   const normalizeProfile = (raw, id) => ({
     ...raw,
     buyerId:          String(raw.buyer_id || id),
+    buyerCode:        raw.buyer_code || null,
     name:             raw.name,
     dailyRemaining:   raw.daily_remaining  ?? raw.dailyRemaining  ?? 0,
     weeklyRemaining:  raw.weekly_remaining ?? raw.weeklyRemaining ?? 0,
@@ -214,7 +276,7 @@ export function DataProvider({ children }) {
     monthlyLimit:     raw.monthly_limit ?? raw.monthlyLimit ?? 30,
     riskScore:        raw.risk_score ?? raw.riskScore ?? 0,
     blacklistStatus:  raw.blacklist_status ?? raw.blacklistStatus ?? false,
-    region:           raw.shop_location || raw.region || '',
+    region:           raw.shop_location || raw.district || raw.region || '',
   });
 
   /* ─── validateTransaction (client-side pre-check) ─────────── */
@@ -359,6 +421,24 @@ export function DataProvider({ children }) {
     }
   }, []);
 
+  /* ─── fetchBuyerProfile ────────────────────────────────────── */
+  const fetchBuyerProfile = useCallback(async (buyerId) => {
+    try {
+      const fresh = await buyerService.getBuyerProfile(buyerId);
+      if (fresh) {
+        const normalized = normalizeProfile(fresh, buyerId);
+        setBuyerProfiles((prev) => ({
+          ...prev,
+          [buyerId]: normalized,
+        }));
+        return normalized;
+      }
+    } catch (err) {
+      console.error('[DataContext] Failed to fetch buyer profile:', err.message);
+    }
+    return null;
+  }, []);
+
   /* ─── Helpers for components ────────────────────────────────── */
   const getBuyerTransactions = useCallback(
     (buyerId) => transactions.filter(
@@ -382,17 +462,20 @@ export function DataProvider({ children }) {
     analytics,
     loading,
     error,
+    errors,
     submitTransaction,
     validateTransaction,
     updatePolicies,
     toggleEmergency,
     toggleBlacklist,
+    fetchBuyerProfile,
     getBuyerTransactions,
     getShopTransactions,
     refreshData: loadData,
     // Expose setters for socket hook to update live
     setTransactions,
     setPolicies,
+    setBuyerProfiles,
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

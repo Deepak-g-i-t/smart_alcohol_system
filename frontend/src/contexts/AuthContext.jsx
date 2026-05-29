@@ -1,9 +1,9 @@
 /**
  * AuthContext — pure Express/JWT authentication (no Firebase).
  *
- * Storage:
- *   localStorage('slmrs_token')  — raw JWT string
- *   localStorage('slmrs_user')   — JSON { id, role, name, email }
+ * Storage (sessionStorage for tab isolation):
+ *   sessionStorage('slmrs_token')  — raw JWT string
+ *   sessionStorage('slmrs_user')   — JSON { id, role, name, email, uid }
  *
  * Exported interface is identical to the old Firebase version so all
  * consuming components continue to work without changes.
@@ -25,41 +25,47 @@ export function useAuth() {
 const STORAGE_TOKEN = 'slmrs_token';
 const STORAGE_USER  = 'slmrs_user';
 
+const formatId = (role, id) => {
+  if (!id) return '';
+  const prefix = role === 'buyer' ? 'BYR-' : role === 'shop' ? 'SHP-' : 'AUTH-';
+  return `${prefix}${String(id).padStart(5, '0')}`;
+};
+
 const readStoredUser = () => {
   try {
-    const token = localStorage.getItem(STORAGE_TOKEN);
+    const token = sessionStorage.getItem(STORAGE_TOKEN);
     if (!token) return null;
 
     const decoded = jwtDecode(token);
 
     // Validate expiry
     if (decoded.exp && decoded.exp * 1000 < Date.now()) {
-      localStorage.removeItem(STORAGE_TOKEN);
-      localStorage.removeItem(STORAGE_USER);
+      sessionStorage.removeItem(STORAGE_TOKEN);
+      sessionStorage.removeItem(STORAGE_USER);
       return null;
     }
 
     // Prefer the full profile stored at login (has email, name)
-    const stored = localStorage.getItem(STORAGE_USER);
+    const stored = sessionStorage.getItem(STORAGE_USER);
     if (stored) return JSON.parse(stored);
 
     // Fallback to decoded payload
-    return { id: decoded.id, role: decoded.role, name: decoded.name || '' };
+    return { id: decoded.id, role: decoded.role, name: decoded.name || '', uid: formatId(decoded.role, decoded.id) };
   } catch {
-    localStorage.removeItem(STORAGE_TOKEN);
-    localStorage.removeItem(STORAGE_USER);
+    sessionStorage.removeItem(STORAGE_TOKEN);
+    sessionStorage.removeItem(STORAGE_USER);
     return null;
   }
 };
 
 const persistAuth = (token, profile) => {
-  localStorage.setItem(STORAGE_TOKEN, token);
-  localStorage.setItem(STORAGE_USER, JSON.stringify(profile));
+  sessionStorage.setItem(STORAGE_TOKEN, token);
+  sessionStorage.setItem(STORAGE_USER, JSON.stringify(profile));
 };
 
 const clearAuth = () => {
-  localStorage.removeItem(STORAGE_TOKEN);
-  localStorage.removeItem(STORAGE_USER);
+  sessionStorage.removeItem(STORAGE_TOKEN);
+  sessionStorage.removeItem(STORAGE_USER);
 };
 
 /* ─── Provider ─────────────────────────────────────────────── */
@@ -81,8 +87,15 @@ export function AuthProvider({ children }) {
     setLoading(true);
     try {
       const data = await authService.login(email, password);
-      // data = { token, role, name, id }
-      const profile = { id: data.id, role: data.role, name: data.name, email };
+      // data = { token, role, name, id, buyer_code }
+      const profile = {
+        id: data.id,
+        role: data.role,
+        name: data.name,
+        email,
+        buyer_code: data.buyer_code || null,
+        uid: data.buyer_code || formatId(data.role, data.id),
+      };
       persistAuth(data.token, profile);
       setUser(profile);
       return { role: data.role };
@@ -116,6 +129,8 @@ export function AuthProvider({ children }) {
           role:  data.role,
           name:  data.name,
           email: userData.email,
+          buyer_code: data.buyer_code || null,
+          uid:   data.buyer_code || formatId(data.role, data.id),
         };
         persistAuth(data.token, profile);
         setUser(profile);

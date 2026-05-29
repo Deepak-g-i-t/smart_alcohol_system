@@ -131,23 +131,25 @@ router.get('/qr/:buyerId', restrictTo('buyer', 'shop', 'authority'), async (req,
 
     // QR payload: signed JWT, expires in 60s
     const payload = {
+      buyer_code: profile.buyer_code,
       buyer_id: user.id,
       name: user.name,
-      daily_remaining: profile.daily_remaining,
-      weekly_remaining: profile.weekly_remaining,
-      monthly_remaining: profile.monthly_remaining,
-      risk_score: profile.risk_score,
       issued_at: Date.now(),
     };
 
     const qrToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '60s' });
     const qrDataUrl = await QRCode.toDataURL(qrToken, {
       errorCorrectionLevel: 'M',
-      width: 300,
+      width: 280,
       margin: 1,
     });
 
-    res.json({ qrDataUrl, expiresIn: 60, buyer: { id: user.id, name: user.name } });
+    res.json({
+      qrDataUrl,
+      token: qrToken,
+      expiresIn: 60,
+      buyer: { buyer_code: profile.buyer_code, name: user.name },
+    });
   } catch (err) {
     next(err);
   }
@@ -166,14 +168,30 @@ router.post('/qr/verify', restrictTo('shop'), async (req, res, next) => {
       return res.status(400).json({ error: 'QR code expired' });
     }
 
-    // Fetch fresh profile
+    // Fetch fresh profile — try buyer_code first, fallback to buyer_id
     const pool = getPool();
-    const [profiles] = await pool.query(
-      'SELECT * FROM BuyerProfiles WHERE buyer_id = ?', [payload.buyer_id]
-    );
+    let profiles;
+    if (payload.buyer_code) {
+      [profiles] = await pool.query(
+        `SELECT bp.*, bp.buyer_code, u.name, u.email
+         FROM BuyerProfiles bp JOIN Users u ON u.id = bp.buyer_id
+         WHERE bp.buyer_code = ?`, [payload.buyer_code]
+      );
+    }
+    if (!profiles?.length) {
+      [profiles] = await pool.query(
+        `SELECT bp.*, bp.buyer_code, u.name, u.email
+         FROM BuyerProfiles bp JOIN Users u ON u.id = bp.buyer_id
+         WHERE bp.buyer_id = ?`, [payload.buyer_id]
+      );
+    }
     if (!profiles.length) return res.status(404).json({ error: 'Buyer not found' });
 
-    res.json({ verified: true, buyer_id: payload.buyer_id, profile: profiles[0] });
+    res.json({
+      verified: true,
+      buyer_code: profiles[0].buyer_code,
+      profile: profiles[0],
+    });
   } catch (err) {
     if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
       return res.status(400).json({ error: 'Invalid or expired QR code' });

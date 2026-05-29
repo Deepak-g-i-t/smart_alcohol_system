@@ -5,7 +5,7 @@ import { Clock } from 'lucide-react';
 export default function BuyerDashboard({ user }) {
     const [history, setHistory] = useState([]);
 
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
 
     useEffect(() => {
         axios.get(`${apiBase}/transactions/history/${user.id}`, {

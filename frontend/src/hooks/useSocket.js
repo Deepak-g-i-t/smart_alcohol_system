@@ -1,20 +1,21 @@
 /**
- * useSocket — Socket.io consumer hook (Task 6)
- * Connects on mount with JWT, disconnects on unmount.
+ * useSocket — Socket.io consumer hook
+ * Connects on mount with JWT from sessionStorage, disconnects on unmount.
  * Returns { connected } so callers can show LIVE indicator.
+ * Handles: new_transaction, emergency_toggle, quota_updated events.
  */
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 
-export function useSocket(onTransaction, onEmergency) {
+export function useSocket(onTransaction, onEmergency, onQuotaUpdated) {
   const socketRef = useRef(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('slmrs_token');
+    const token = sessionStorage.getItem('slmrs_token');
     if (!token) return;
 
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
     socketRef.current = io(socketUrl, {
       auth: { token },
@@ -38,11 +39,15 @@ export function useSocket(onTransaction, onEmergency) {
     });
 
     if (onTransaction) {
-      socketRef.current.on('transaction', onTransaction);
+      socketRef.current.on('new_transaction', onTransaction);
     }
 
     if (onEmergency) {
       socketRef.current.on('emergency_toggle', onEmergency);
+    }
+
+    if (onQuotaUpdated) {
+      socketRef.current.on('quota_updated', onQuotaUpdated);
     }
 
     return () => {

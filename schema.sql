@@ -1,22 +1,43 @@
 CREATE DATABASE IF NOT EXISTS smart_alcohol_system;
 USE smart_alcohol_system;
 
--- ─── Core Users table ────────────────────────────────────────────────────────
+-- ─── Core Users table (all columns included — do not trim) ──────────────────
 CREATE TABLE IF NOT EXISTS Users (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    name             VARCHAR(255) NOT NULL,
+    role             ENUM('authority', 'shop', 'buyer') NOT NULL,
+    email            VARCHAR(255) UNIQUE NOT NULL,
+    password_hash    VARCHAR(255) NOT NULL,
+    shop_location    VARCHAR(255) DEFAULT NULL,
+    phone            VARCHAR(20)  DEFAULT NULL,
+    address          TEXT         DEFAULT NULL,
+    district         VARCHAR(100) DEFAULT NULL,
+    age              INT          DEFAULT NULL,
+    dept             VARCHAR(255) DEFAULT NULL,
+    authority_code   VARCHAR(100) DEFAULT NULL,
+    otp_hash         VARCHAR(255) DEFAULT NULL,
+    otp_expires_at   TIMESTAMP    NULL DEFAULT NULL,
+    created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── Shops (must exist before BuyerProfiles for FK ordering) ─────────────────
+CREATE TABLE IF NOT EXISTS Shops (
     id              INT AUTO_INCREMENT PRIMARY KEY,
-    name            VARCHAR(255) NOT NULL,
-    role            ENUM('authority', 'shop', 'buyer') NOT NULL,
-    email           VARCHAR(255) UNIQUE NOT NULL,
-    password_hash   VARCHAR(255) NOT NULL,
-    shop_location   VARCHAR(255) DEFAULT NULL,
-    otp_hash        VARCHAR(255) DEFAULT NULL,
-    otp_expires_at  TIMESTAMP NULL DEFAULT NULL,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    user_id         INT NOT NULL UNIQUE,
+    shop_name       VARCHAR(255) NOT NULL,
+    license_number  VARCHAR(100) NOT NULL,
+    address         TEXT         DEFAULT NULL,
+    district        VARCHAR(100) DEFAULT NULL,
+    phone           VARCHAR(20)  DEFAULT NULL,
+    status          ENUM('active','suspended','pending') DEFAULT 'pending',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
 );
 
 -- ─── Buyer profiles with extended columns ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS BuyerProfiles (
     buyer_id           INT PRIMARY KEY,
+    buyer_code         VARCHAR(12) UNIQUE,
     daily_limit        INT DEFAULT 2,
     weekly_limit       INT DEFAULT 10,
     monthly_limit      INT DEFAULT 30,
@@ -25,6 +46,7 @@ CREATE TABLE IF NOT EXISTS BuyerProfiles (
     monthly_remaining  INT DEFAULT 30,
     risk_score         INT DEFAULT 0,
     risk_factors       JSON DEFAULT NULL,                      -- multi-factor breakdown
+    blacklist_status   BOOLEAN DEFAULT FALSE,
     blacklist_reason   VARCHAR(255) DEFAULT NULL,
     blacklisted_at     TIMESTAMP NULL DEFAULT NULL,
     blacklisted_by     INT DEFAULT NULL,

@@ -1,52 +1,85 @@
 /**
- * Digital Buyer ID Card (Priority 2.2)
- * - QR code display via react-qr-code
+ * Digital Buyer ID Card
+ * - QR code fetched from backend (signed JWT)
+ * - 60s countdown timer with auto-refresh
  * - SVG quota rings
  * - Print-ready CSS
  * - Download as PNG via html-to-image
  */
-import { useRef, useState, useEffect } from 'react';
-import QRCode from 'react-qr-code';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { toPng } from 'html-to-image';
 import { useAuth } from '../../contexts/AuthContext';
 import { useData } from '../../contexts/DataContext';
+import { getBuyerQR } from '../../api/buyerService';
 import QuotaRingProgress from '../../components/QuotaRingProgress';
-import StatusBadge from '../../components/StatusBadge';
-import { Download, RefreshCw, Shield, Zap } from 'lucide-react';
+import { Download, RefreshCw, Shield, Zap, Clock } from 'lucide-react';
 
 const getRiskLabel = (score) => {
   if (score <= 20) return { label: 'Low Risk', color: 'text-accent-green', bg: 'bg-accent-green/10 border-accent-green/30' };
-  if (score <= 40) return { label: 'Moderate', color: 'text-accent-amber', bg: 'bg-accent-amber/10 border-accent-amber/30' };
-  if (score <= 60) return { label: 'Elevated', color: 'text-accent-pink', bg: 'bg-accent-pink/10 border-accent-pink/30' };
+  if (score <= 40) return { label: 'Moderate', color: 'text-accent-cyan', bg: 'bg-accent-cyan/10 border-accent-cyan/30' };
+  if (score <= 60) return { label: 'Elevated', color: 'text-accent-amber', bg: 'bg-accent-amber/10 border-accent-amber/30' };
   if (score <= 80) return { label: 'High Risk', color: 'text-accent-red', bg: 'bg-accent-red/10 border-accent-red/30' };
-  return { label: 'Critical', color: 'text-red-400', bg: 'bg-red-900/20 border-red-500/30' };
+  return { label: 'Critical', color: 'text-red-400 animate-pulse', bg: 'bg-red-900/20 border-red-500/30' };
 };
 
 export default function DigitalIDCard() {
   const { userProfile } = useAuth();
   const { buyerProfiles } = useData();
   const cardRef = useRef(null);
+  const countdownRef = useRef(null);
+
   const [downloading, setDownloading] = useState(false);
-  const [qrRefreshKey, setQrRefreshKey] = useState(Date.now());
+  const [qrDataUrl, setQrDataUrl] = useState(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState(null);
+  const [countdown, setCountdown] = useState(60);
 
-  // QR refreshes every 60s
-  useEffect(() => {
-    const interval = setInterval(() => setQrRefreshKey(Date.now()), 60000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const profile = buyerProfiles[userProfile?.uid] || buyerProfiles[userProfile?.buyerId];
+  // buyerProfiles is keyed by the raw DB id
+  const profile = buyerProfiles[userProfile?.id];
   const risk = getRiskLabel(profile?.riskScore || 0);
+  const buyerCode = userProfile?.buyer_code || profile?.buyerCode || `USR-${userProfile?.id}`;
 
-  // QR data: buyer identity token (in demo, just a JSON string)
-  const qrPayload = JSON.stringify({
-    buyer_id: userProfile?.uid,
-    name: userProfile?.name,
-    issued_at: qrRefreshKey,
-    daily_remaining: profile?.dailyRemaining,
-    weekly_remaining: profile?.weeklyRemaining,
-    monthly_remaining: profile?.monthlyRemaining,
-  });
+  // Fetch QR code from backend
+  const fetchQR = useCallback(async () => {
+    if (!userProfile?.id) return;
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      const data = await getBuyerQR(userProfile.id);
+      setQrDataUrl(data.qrDataUrl);
+      setCountdown(60);
+    } catch (err) {
+      console.error('[DigitalIDCard] QR fetch failed:', err.message);
+      setQrError('Failed to generate QR code. Please try again.');
+    } finally {
+      setQrLoading(false);
+    }
+  }, [userProfile?.id]);
+
+  // Initial QR fetch on mount
+  useEffect(() => {
+    fetchQR();
+  }, [fetchQR]);
+
+  // Countdown timer — auto-refresh at 5s before expiry
+  useEffect(() => {
+    countdownRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          // Auto-refresh QR
+          fetchQR();
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(countdownRef.current);
+  }, [fetchQR]);
+
+  const handleRefreshQR = () => {
+    fetchQR();
+  };
 
   const handleDownload = async () => {
     if (!cardRef.current) return;
@@ -54,7 +87,7 @@ export default function DigitalIDCard() {
     try {
       const dataUrl = await toPng(cardRef.current, { quality: 0.95, pixelRatio: 2 });
       const link = document.createElement('a');
-      link.download = `slmrs-id-${userProfile?.uid || 'buyer'}.png`;
+      link.download = `slmrs-id-${buyerCode || 'buyer'}.png`;
       link.href = dataUrl;
       link.click();
     } catch (err) {
@@ -63,6 +96,9 @@ export default function DigitalIDCard() {
       setDownloading(false);
     }
   };
+
+  // Countdown progress bar percentage
+  const countdownPct = (countdown / 60) * 100;
 
   return (
     <div className="space-y-6 animate-in">
@@ -73,10 +109,11 @@ export default function DigitalIDCard() {
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => setQrRefreshKey(Date.now())}
+            onClick={handleRefreshQR}
+            disabled={qrLoading}
             className="btn-secondary flex items-center gap-2 text-sm"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${qrLoading ? 'animate-spin' : ''}`} />
             Refresh QR
           </button>
           <button
@@ -124,17 +161,17 @@ export default function DigitalIDCard() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <p className="text-xs text-dark-400 uppercase tracking-wider mb-1">Buyer ID</p>
-                  <p className="text-xs font-mono text-accent-cyan">{userProfile?.uid || '—'}</p>
+                  <p className="text-xs font-mono text-accent-cyan font-bold">{buyerCode}</p>
                 </div>
                 <div>
                   <p className="text-xs text-dark-400 uppercase tracking-wider mb-1">Aadhaar</p>
                   <p className="text-xs font-mono text-dark-300">
-                    XXXX-XXXX-{userProfile?.aadhaarLast4 || '????'}
+                    XXXX-XXXX-{profile?.aadhaarLast4 || '????'}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-dark-400 uppercase tracking-wider mb-1">Region</p>
-                  <p className="text-xs text-dark-200">{profile?.region || 'N/A'}</p>
+                  <p className="text-xs text-dark-200">{profile?.region || profile?.district || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-xs text-dark-400 uppercase tracking-wider mb-1">Risk Level</p>
@@ -145,12 +182,40 @@ export default function DigitalIDCard() {
               </div>
             </div>
 
-            {/* Right — QR */}
+            {/* Right — QR from API */}
             <div className="flex flex-col items-center gap-2">
-              <div className="p-3 bg-white rounded-xl">
-                <QRCode value={qrPayload} size={100} level="M" />
+              <div className="p-3 bg-white rounded-xl" style={{ width: 116, height: 116 }}>
+                {qrLoading ? (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <RefreshCw className="w-6 h-6 text-dark-400 animate-spin" />
+                  </div>
+                ) : qrDataUrl ? (
+                  <img
+                    src={qrDataUrl}
+                    alt="Buyer QR Code"
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-dark-500 text-xs text-center">
+                    {qrError || 'QR unavailable'}
+                  </div>
+                )}
               </div>
-              <p className="text-[9px] text-dark-400">Scan to verify • Expires 60s</p>
+              {/* Countdown */}
+              <div className="w-full">
+                <div className="h-1 bg-dark-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-accent-cyan rounded-full transition-all duration-1000 ease-linear"
+                    style={{ width: `${countdownPct}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-center gap-1 mt-1">
+                  <Clock className="w-2.5 h-2.5 text-dark-400" />
+                  <p className="text-[9px] text-dark-400">
+                    {countdown > 0 ? `Expires in ${countdown}s` : 'Refreshing…'}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -159,9 +224,9 @@ export default function DigitalIDCard() {
             <p className="text-xs text-dark-400 uppercase tracking-wider mb-3">Quota Remaining</p>
             {profile ? (
               <QuotaRingProgress
-                daily={{ remaining: profile.dailyRemaining, limit: 2 }}
-                weekly={{ remaining: profile.weeklyRemaining, limit: 10 }}
-                monthly={{ remaining: profile.monthlyRemaining, limit: 30 }}
+                daily={{ remaining: profile.dailyRemaining, limit: profile.dailyLimit || 2 }}
+                weekly={{ remaining: profile.weeklyRemaining, limit: profile.weeklyLimit || 10 }}
+                monthly={{ remaining: profile.monthlyRemaining, limit: profile.monthlyLimit || 30 }}
               />
             ) : (
               <p className="text-xs text-dark-500 text-center py-4">Profile not loaded</p>

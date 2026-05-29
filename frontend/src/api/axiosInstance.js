@@ -1,12 +1,13 @@
 /**
  * Axios instance with JWT interceptors.
  * All API calls go through this instance.
+ * Uses sessionStorage for tab isolation (Fix 3).
  */
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
 const axiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -14,7 +15,7 @@ const axiosInstance = axios.create({
 /* ─── Request interceptor: attach Bearer token ─────────── */
 axiosInstance.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('slmrs_token');
+    const token = sessionStorage.getItem('slmrs_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -29,8 +30,8 @@ axiosInstance.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       // Session expired — clear auth state and redirect
-      localStorage.removeItem('slmrs_token');
-      localStorage.removeItem('slmrs_user');
+      sessionStorage.removeItem('slmrs_token');
+      sessionStorage.removeItem('slmrs_user');
       toast.error('Session expired. Please sign in again.', {
         style: {
           background: 'rgba(15,18,38,0.95)',

@@ -101,7 +101,7 @@ export default function BuyerDashboard() {
 
   const riskLevel = getRiskLevel(profile?.risk_score || 0);
   const recentHistory = history.slice(0, 10);
-  const formattedId = `BYR-${String(buyerId).padStart(5, '0')}`;
+  const formattedId = user?.buyer_code || user?.uid || `BYR-${String(buyerId).padStart(5, '0')}`;
 
   const accountStatus = profile?.blacklist_status
     ? { label: 'Blacklisted', cls: 'bg-accent-red/10 border-accent-red/30 text-accent-red' }
